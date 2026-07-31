@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSession, signIn, signOut } from "next-auth/react";
 import { GLOSSARY, findGlossaryTerms } from "@/lib/glossary";
 
 /* ---------- constants ---------- */
@@ -121,7 +122,8 @@ function Wordmark({ small }) {
 
 /* ---------- reusable birth details form ---------- */
 
-function BirthForm({ cta, onCast, compact }) {
+function BirthForm({ cta, onCast, compact, nameLabel, namePlaceholder }) {
+  const [name, setName] = useState("");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
   const [timeUnknown, setTimeUnknown] = useState(false);
@@ -157,6 +159,7 @@ function BirthForm({ cta, onCast, compact }) {
 
   async function submit() {
     setError("");
+    if (!name.trim()) return setError("We need a name.");
     if (!date) return setError("We need the birth date.");
     if (!timeUnknown && !time)
       return setError("Add the birth time — or tap “I don't know it.”");
@@ -169,6 +172,7 @@ function BirthForm({ cta, onCast, compact }) {
     );
     setBusy(true);
     const err = await onCast({
+      name: name.trim(),
       date,
       time: timeUnknown ? "12:00" : time,
       timeUnknown,
@@ -185,6 +189,17 @@ function BirthForm({ cta, onCast, compact }) {
 
   return (
     <div className={`flex flex-col ${gap}`}>
+      <label className="block">
+        <span className="text-sm text-muted">{nameLabel || "First name"}</span>
+        <input
+          type="text"
+          value={name}
+          placeholder={namePlaceholder || "What should the stars call you?"}
+          onChange={(e) => setName(e.target.value)}
+          className="card mt-1 w-full px-4 py-3 bg-transparent outline-none focus:border-gold/60 placeholder:text-muted/50"
+        />
+      </label>
+
       <label className="block">
         <span className="text-sm text-muted">Birth date</span>
         <input
@@ -303,12 +318,34 @@ function ChartSummary({ chart, title }) {
   );
 }
 
-function SidePanel({ chart, partnerChart, compat, glossaryKeys }) {
+function SidePanel({ chart, partnerChart, compat, glossaryKeys, account, partnerName }) {
   return (
     <div className="flex flex-col gap-6">
-      {chart && <ChartSummary chart={chart} title="Your chart" />}
+      {account?.email && (
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted truncate">{account.email}</span>
+          <button
+            onClick={() => signOut()}
+            className="text-xs text-muted underline decoration-dotted cursor-pointer shrink-0 ml-2"
+          >
+            sign out
+          </button>
+        </div>
+      )}
 
-      {partnerChart && <ChartSummary chart={partnerChart} title="Their chart" />}
+      {chart && (
+        <ChartSummary
+          chart={chart}
+          title={account?.name ? `${account.name}'s chart` : "Your chart"}
+        />
+      )}
+
+      {partnerChart && (
+        <ChartSummary
+          chart={partnerChart}
+          title={partnerName ? `${partnerName}'s chart` : "Their chart"}
+        />
+      )}
 
       {compat && (
         <div>
@@ -371,6 +408,13 @@ export default function Home() {
   const [step, setStep] = useState("intent"); // intent | birth | computing | revelation | chat
   const [intent, setIntent] = useState(null);
 
+  // account
+  const { data: session, status: authStatus } = useSession();
+  const [name, setName] = useState("");
+  const [partners, setPartners] = useState([]);
+  const [googleReady, setGoogleReady] = useState(false);
+  const restoredRef = useRef(false);
+
   // charts
   const [birth, setBirth] = useState(null);
   const [chart, setChart] = useState(null);
@@ -395,6 +439,57 @@ export default function Home() {
   const [showCard, setShowCard] = useState(false);
   const canvasRef = useRef(null);
 
+  /* ----- auth: is Google sign-in configured? ----- */
+  useEffect(() => {
+    fetch("/api/auth/providers")
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((p) => setGoogleReady(!!p?.google))
+      .catch(() => {});
+  }, []);
+
+  /* ----- auth: restore saved profile on sign-in ----- */
+  useEffect(() => {
+    if (authStatus !== "authenticated" || restoredRef.current) return;
+    restoredRef.current = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/me");
+        if (!res.ok) return;
+        const data = await res.json();
+        setPartners(data.partners || []);
+        const p = data.profile;
+        if (p?.birth && !chart) {
+          // Welcome back: recompute the chart from saved details.
+          setName(p.name || "");
+          setBirth(p.birth);
+          if (p.intent) setIntent(p.intent);
+          const cr = await fetch("/api/chart", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ birth: p.birth, intent: p.intent }),
+          });
+          if (cr.ok) {
+            const cd = await cr.json();
+            setChart(cd.chart);
+            setRevelation(cd.revelation);
+            cd.revelation.forEach(absorbTerms);
+            setStep((s) => (s === "intent" || s === "birth" ? "revelation" : s));
+          }
+        } else if (!p?.birth && birth && name) {
+          // Signed in mid-session with a freshly cast chart: save it.
+          await fetch("/api/me", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, birth, intent }),
+          });
+        }
+      } catch {
+        /* profile restore is best-effort */
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authStatus]);
+
   /* ----- glossary: accumulate terms seen in Naksha's output ----- */
   const absorbTerms = useCallback((text) => {
     const found = findGlossaryTerms(text);
@@ -410,24 +505,34 @@ export default function Home() {
   const castMyChart = useCallback(
     async (b) => {
       try {
+        const { name: userName, ...birthOnly } = b;
         const res = await fetch("/api/chart", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ birth: b, intent }),
+          body: JSON.stringify({ birth: birthOnly, intent }),
         });
         const data = await res.json();
         if (!res.ok) return data.error || "Something went wrong.";
-        setBirth(b);
+        setName(userName);
+        setBirth(birthOnly);
         setChart(data.chart);
         setRevelation(data.revelation);
         data.revelation.forEach(absorbTerms);
         setStep("revelation");
+        // Signed in? Persist the profile (best-effort).
+        if (session?.user?.email) {
+          fetch("/api/me", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: userName, birth: birthOnly, intent }),
+          }).catch(() => {});
+        }
         return null;
       } catch {
         return "Something went wrong casting the chart.";
       }
     },
-    [intent, absorbTerms]
+    [intent, absorbTerms, session]
   );
 
   /* ----- chat (solo or compatibility mode) ----- */
@@ -443,8 +548,15 @@ export default function Home() {
       try {
         const url = partner ? "/api/compatibility" : "/api/reading";
         const body = partner
-          ? { birthA: birth, birthB: partner, question: text, intent }
-          : { birth, question: text, intent };
+          ? {
+              birthA: birth,
+              birthB: partner,
+              question: text,
+              intent,
+              name,
+              partnerName: partner.name,
+            }
+          : { birth, question: text, intent, name };
         const res = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -457,6 +569,21 @@ export default function Home() {
           );
         if (data.compat) setCompat(data.compat);
         if (data.chartB) setPartnerChart(data.chartB);
+        // Save/refresh this partner in the rolodex with their latest score.
+        if (data.compat && partner && session?.user?.email) {
+          fetch("/api/partners", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: partner.name,
+              birth: partner,
+              lastScore: data.compat.total,
+            }),
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => d?.partners && setPartners(d.partners))
+            .catch(() => {});
+        }
         absorbTerms(data.reading);
         setMessages((m) => [...m, { role: "naksha", text: data.reading }]);
       } catch (e) {
@@ -468,7 +595,7 @@ export default function Home() {
         setAsking(false);
       }
     },
-    [question, asking, birth, intent, partnerBirth, absorbTerms]
+    [question, asking, birth, intent, partnerBirth, absorbTerms, name, session]
   );
 
   /* ----- partner chart ----- */
@@ -477,7 +604,7 @@ export default function Home() {
       setPartnerBirth(b);
       setShowPartnerForm(false);
       setStep("chat");
-      ask("How compatible are we, really?", b);
+      ask(`How compatible are ${b.name} and I, really?`, b);
       return null;
     },
     [ask]
@@ -568,6 +695,21 @@ export default function Home() {
               </button>
             ))}
           </div>
+
+          {googleReady && !session && (
+            <button
+              onClick={() => signIn("google")}
+              className="mt-8 text-sm text-muted underline decoration-dotted cursor-pointer"
+            >
+              Been here before? Sign in with Google to pick up your chart.
+            </button>
+          )}
+          {session && (
+            <p className="mt-8 text-xs text-muted">
+              ✓ Signed in as {session.user.email}
+              {name ? ` — restoring ${name}'s sky…` : ""}
+            </p>
+          )}
         </div>
       )}
 
@@ -598,7 +740,9 @@ export default function Home() {
       {step === "revelation" && chart && (
         <div className="rise w-full max-w-md mt-[6vh] pb-16">
           <Wordmark small />
-          <p className="text-muted text-sm mt-8">Born under</p>
+          <p className="text-muted text-sm mt-8">
+            {name ? `${name}, you were born under` : "Born under"}
+          </p>
           <h1 className="font-display text-4xl mt-1 text-gold-soft">
             {chart.janmaNakshatra.nakshatra}
           </h1>
@@ -806,6 +950,8 @@ export default function Home() {
               partnerChart={partnerChart}
               compat={compat}
               glossaryKeys={glossaryKeys}
+              account={session ? { email: session.user.email, name } : name ? { name } : null}
+              partnerName={partnerBirth?.name}
             />
           </div>
         </aside>
@@ -835,6 +981,8 @@ export default function Home() {
               partnerChart={partnerChart}
               compat={compat}
               glossaryKeys={glossaryKeys}
+              account={session ? { email: session.user.email, name } : name ? { name } : null}
+              partnerName={partnerBirth?.name}
             />
           </div>
         </div>
@@ -856,8 +1004,58 @@ export default function Home() {
               don&apos;t need labels. Guna matching reads from the Moon, so an
               unknown birth time is fine.
             </p>
-            <div className="mt-6">
-              <BirthForm cta="Cast their chart" onCast={castPartnerChart} compact />
+
+            {partners.length > 0 && (
+              <div className="mt-5">
+                <p className="text-xs uppercase tracking-widest text-muted">
+                  Your rolodex
+                </p>
+                <div className="mt-2 flex flex-col gap-2">
+                  {partners.map((p) => (
+                    <div key={p.id} className="card flex items-center px-4 py-2.5">
+                      <button
+                        onClick={() => castPartnerChart({ ...p.birth, name: p.name })}
+                        className="flex-1 text-left cursor-pointer"
+                      >
+                        <span className="text-sm">{p.name}</span>
+                        <span className="text-xs text-muted">
+                          {" "}· {p.birth.place?.split(",")[0]}
+                          {p.lastScore != null ? ` · ${p.lastScore}/36` : ""}
+                        </span>
+                      </button>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          try {
+                            const r = await fetch("/api/partners", {
+                              method: "DELETE",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ id: p.id }),
+                            });
+                            const d = await r.json();
+                            if (r.ok) setPartners(d.partners);
+                          } catch {}
+                        }}
+                        className="text-muted hover:text-red-300 cursor-pointer px-1"
+                        title="Remove from rolodex"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted mt-3">or cast someone new:</p>
+              </div>
+            )}
+
+            <div className="mt-4">
+              <BirthForm
+                cta="Cast their chart"
+                onCast={castPartnerChart}
+                compact
+                nameLabel="Their first name"
+                namePlaceholder="So the rolodex remembers them"
+              />
             </div>
             <button
               onClick={() => setShowPartnerForm(false)}

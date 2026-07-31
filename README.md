@@ -21,6 +21,30 @@ ANTHROPIC_API_KEY=sk-ant-...
 Everything else — onboarding, chart computation, the revelation screen, and the
 share card — works without a key.
 
+## Accounts & persistence (optional)
+
+Sign-in is Google OAuth via Auth.js; app data (profile + partner rolodex) is
+stored in Upstash Redis keyed by email. Both are optional — without them the
+app runs in guest mode with no persistence.
+
+1. **AUTH_SECRET** — already generated into `.env.local` locally; on Vercel add
+   one (`openssl rand -base64 33`).
+2. **Google OAuth** — [console.cloud.google.com](https://console.cloud.google.com)
+   → APIs & Services → Credentials → Create OAuth client ID (Web application).
+   Authorized redirect URIs:
+   - `http://localhost:3000/api/auth/callback/google`
+   - `https://YOUR-DOMAIN.vercel.app/api/auth/callback/google`
+
+   Set `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`. The sign-in button only
+   appears when these are configured.
+3. **Storage** — on Vercel: project → Storage → add **Upstash Redis** (sets the
+   `KV_REST_API_URL`/`KV_REST_API_TOKEN` env vars automatically). Locally, a
+   gitignored `.data/store.json` file is used instead; no setup needed.
+
+What persists: the user's name, birth details, and intent (restored on next
+sign-in, straight to the revelation screen), plus a rolodex of partners they've
+compatibility-checked (name, birth details, latest guna score).
+
 ## How it's wired
 
 | Piece | File | Notes |

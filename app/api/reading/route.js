@@ -12,7 +12,7 @@ const anthropic = new Anthropic(); // reads ANTHROPIC_API_KEY from Vercel env va
 
 
 export async function POST(req) {
-  const { birth, question, intent } = await req.json();
+  const { birth, question, intent, name } = await req.json();
   // birth: { date, time, timeUnknown, tzOffsetMinutes, lat, lon } — geocode city -> lat/lon client-side
   const chart = chartForBirth(birth);
   const knowledge = relevantKnowledge(chart);
@@ -34,6 +34,7 @@ export async function POST(req) {
         `CHART JSON (ground truth):\n${JSON.stringify(chart, null, 1)}\n\n` +
         `NAKSHA INTERPRETATION NOTES (your interpretive source — synthesize from these, ` +
         `in this voice):\n${JSON.stringify(knowledge, null, 1)}\n\n` +
+        `USER'S NAME: ${name || 'not provided'}\n` +
         `USER'S STATED INTENT AT SIGNUP: ${intent || 'unknown'}\n` +
         `USER'S QUESTION: ${question}`,
     }],

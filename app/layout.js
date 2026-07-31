@@ -1,4 +1,5 @@
 import { Fraunces, Inter } from "next/font/google";
+import { Providers } from "./providers";
 import "./globals.css";
 
 const fraunces = Fraunces({
@@ -26,7 +27,9 @@ export default function RootLayout({ children }) {
       lang="en"
       className={`${fraunces.variable} ${inter.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

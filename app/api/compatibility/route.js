@@ -11,7 +11,7 @@ const anthropic = new Anthropic();
 
 export async function POST(req) {
   try {
-    const { birthA, birthB, question, intent } = await req.json();
+    const { birthA, birthB, question, intent, name, partnerName } = await req.json();
     if (!birthA?.date || !birthB?.date) {
       return Response.json({ error: 'Both birth details are required.' }, { status: 400 });
     }
@@ -49,6 +49,8 @@ export async function POST(req) {
           `PARTNER'S MOON PROFILE (chart B, ground truth):\n${JSON.stringify(moonSummary(chartB), null, 1)}\n\n` +
           `ASHTA KOOTA ANALYSIS (computed, ground truth):\n${JSON.stringify(compat, null, 1)}\n\n` +
           `NAKSHA INTERPRETATION NOTES (synthesize from these, in this voice):\n${JSON.stringify(knowledge, null, 1)}\n\n` +
+          `USER'S NAME: ${name || 'not provided'}\n` +
+          `PARTNER'S NAME: ${partnerName || 'not provided'}\n` +
           `USER'S STATED INTENT AT SIGNUP: ${intent || 'unknown'}\n` +
           `USER'S QUESTION: ${question || 'How compatible are we?'}`,
       }],
